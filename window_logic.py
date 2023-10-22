@@ -1,11 +1,14 @@
 import os, sys, pathlib
+
+import cv2
+import numpy as np
 from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QFormLayout, QLayout, QMenuBar,\
     QLineEdit, QLabel, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFileDialog, QSizePolicy, QCheckBox
-from PySide6.QtGui import QPainter, QPixmap, QIcon, QIntValidator, QScreen, QPen, QBrush, QColor
+from PySide6.QtGui import QPainter, QPixmap, QIcon, QIntValidator, QScreen, QPen, QBrush, QColor, QImage
 from PySide6.QtCore import Qt, QPoint, QSize, QRect, QLine
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from video_logic import skew_map, save_map, get_map, crop_img, dust_selection
+from video_logic import skew_map, save_map, get_map, crop_img, dust_selection, get_counters_list
 from loadlabel import loading
 import config as cf
 
@@ -46,6 +49,8 @@ class SettingsDialog(QDialog):
         self.dust_min_area = 50
         self.dust_thresh = 200
 
+        self.hole_amount = 10
+
         self.thickness_editor = QLineEdit(self)
         self.frame_frequency_editor = QLineEdit(self)
         self.skew_effect_editor = QLineEdit(self)
@@ -53,6 +58,7 @@ class SettingsDialog(QDialog):
         self.dust_selection_editor = QCheckBox("Отображать контуры пыли", self)
         self.dust_min_editor = QLineEdit(self)
         self.dust_thresh_editor = QLineEdit(self)
+        self.hole_amount_editor = QLineEdit(self)
         self._editors_init()
 
         self.ok_btn = QPushButton("Oк", self)
@@ -92,6 +98,11 @@ class SettingsDialog(QDialog):
         self.dust_thresh_editor.setText(str(self.dust_thresh))
         self.dust_thresh_editor.textChanged.connect(self.dust_thresh_edit_action)
 
+        self.hole_amount_editor.setAlignment(Qt.AlignLeft)
+        self.hole_amount_editor.setValidator(QIntValidator())
+        self.hole_amount_editor.setText(str(self.hole_amount))
+        self.hole_amount_editor.textChanged.connect(self.hole_amount_edit_action)
+
     def _widgets_to_layout(self) -> None:
         layout = QFormLayout()
         layout.addRow("Параметры вырезки", None)
@@ -104,6 +115,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.dust_selection_editor)
         layout.addRow("Минимальная площадь пыли", self.dust_min_editor)
         layout.addRow("Яркость выискиваемой пыли", self.dust_thresh_editor)
+        layout.addRow("Параметры отображения", None)
+        layout.addRow("Количество отверстий", self.hole_amount_editor)
         layout.addWidget(self.ok_btn)
         self.setLayout(layout)
 
@@ -142,6 +155,12 @@ class SettingsDialog(QDialog):
         if self.dust_thresh > 255:
             self.dust_thresh = 255
         self.dust_thresh_editor.setText(str(self.dust_thresh))
+
+    def hole_amount_edit_action(self, text_):
+        self.hole_amount = 1 if len(text_) <= 0 or text_.find('-') != -1 or int(text_) < 1 else int(text_)
+        if self.hole_amount > 18:
+            self.hole_amount = 18
+        self.hole_amount_editor.setText(str(self.hole_amount))
 
     def run(self) -> None:
         self.exec()
@@ -194,13 +213,32 @@ class PaintTube(QWidget):
         super().__init__(parent_)
         self.setMinimumSize(2000, 1000)
         self.img = None
+        self.image_frame = QLabel(self)
+        self.hole_amount = 10
+
+    def _widgets_to_layout(self) -> None:
+        layout = QHBoxLayout()
+        layout.addWidget(self.image_frame)
+        self.setLayout(layout)
 
     def paintEvent(self, event_) -> None:
         painter = TubePainter(self)
         painter.draw_all()
 
-    def connect_img(self, img_) -> None:
-        self.img = img_
+    def connect_img(self, img_, coord_list_) -> None:
+        self.img = img_.copy()
+        self.img.resize((self.img.shape[0], self.img.shape[1], 4))
+        for x in range(self.img.shape[1]):
+            for y in range(self.img.shape[0]):
+                self.img[y, x] = [250, 250, 250, 255]
+        for i in range(len(coord_list_)):
+            for p in coord_list_[i]:
+                col = img_[p[0][1], p[0][0]]
+                self.img[p[0][1], p[0][0]] = [col[0], col[1], col[2], 0]
+        self.img = QImage(self.img.data, self.img.shape[1], self.img.shape[0],
+                          QImage.Format_RGB888).rgbSwapped()
+        # self.image_frame.setPixmap(QPixmap.fromImage(self.img))
+        # self.image_frame.setWindowOpacity(0.1)
 
     def set_active(self, is_active_: bool = True) -> False:
         self.setVisible(is_active_)
@@ -298,9 +336,13 @@ class MenuWidget(QWidget):
     def compute_video(self, path) -> None:
         self.img = get_map(path, self.settings_dialog.thickness, self.settings_dialog.frame_frequency)
         self.img = skew_map(self.img, self.settings_dialog.skew_effect)
+        self.paint_map.connect_img(self.img, get_counters_list(self.img, self.settings_dialog.dust_thresh,
+                                   self.settings_dialog.dust_min_area))
+
         if self.settings_dialog.is_dust_selection:
             self.img = dust_selection(self.img, self.settings_dialog.dust_thresh,
                                       self.settings_dialog.dust_min_area)
+        self.show_results()
 
     def show_results(self):
         if self.img is None:
