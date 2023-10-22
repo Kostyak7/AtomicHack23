@@ -9,27 +9,10 @@ from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 from tqdm.contrib import tzip
 import config as cf
+import math as m
 
 
-def get_tracker(tracker_type_):
-    if tracker_type_ == 'BOOSTING':
-        return cv2.TrackerBoosting_create()
-    if tracker_type_ == 'MIL':
-        return cv2.TrackerMIL_create()
-    if tracker_type_ == 'TLD':
-        return cv2.TrackerTLD_create()
-    if tracker_type_ == 'MEDIANFLOW':
-        return cv2.TrackerMedianFlow_create()
-    if tracker_type_ == 'GOTURN':
-        return cv2.TrackerGOTURN_create()
-    if tracker_type_ == 'MOSSE':
-        return cv2.TrackerMOSSE_create()
-    if tracker_type_ == "CSRT":
-        return cv2.TrackerCSRT_create()
-    return None
-
-
-def read_video(path, img_size, transform=None, frames_freq=10):
+def read_video(path, img_size, frames_freq=10):
     frames = []
     cap = cv2.VideoCapture(path)
 
@@ -41,7 +24,6 @@ def read_video(path, img_size, transform=None, frames_freq=10):
 
     length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print("Initial frames num", length)
-    # N = length // (frames_num)
     N = length // frames_freq
     print("Step N", N)
 
@@ -104,25 +86,62 @@ def get_slice(frame, thickness=4):
     return slice
 
 
-def video_main(thickness=4):
-    # (major_ver, minor_ver, subminor_ver) = (cv2.__version__).split('.')
-    tracker = get_tracker(cf.TRACKER_TYPES[1])
+def get_map(video_path, thickness=4, frame_freq=2):
+    frames = read_video(video_path, cf.IMG_SIZE, frames_freq=frame_freq)
+    sizes = (thickness, frames[0].shape[0] * 2 + frames[0].shape[1] * 2, 3)
+    img = frames[0].copy()
+    img.resize((sizes[0] * len(frames), sizes[1], sizes[2]))
+    for i in range(len(frames)):
+        slice = get_slice(frames[i], thickness)
+        for x in range(sizes[1]):
+            for y in range(sizes[0]):
+                img[y + i * thickness, x] = slice[y, x]
+    return img
 
+
+def rotate_map(origin_map):
+    # img = origin_map.copy()
+    # return img
+    return origin_map
+
+
+def skew_map(origin_img, effect=20):
+    img = origin_img.copy()
+    coef = 8 * m.pi / origin_img.shape[1]
+    img.resize((origin_img.shape[0] + 2 * effect, origin_img.shape[1], origin_img.shape[2]))
+    new_y = [0] * origin_img.shape[1]
+    for x in range(origin_img.shape[1]):
+        new_y[x] = int((m.cos(coef * x) + 1) * effect)
+    for y in range(origin_img.shape[0]):
+        for x in range(origin_img.shape[1]):
+            img[new_y[x] + y, x] = origin_img[y, x]
+    return img
+
+
+def crop_img(origin_img, x_=160, y_=70):
+    img = origin_img.copy()
+    img.resize((origin_img.shape[0] - 2*y_, origin_img.shape[1] - 2*x_,3))
+    for x in range(img.shape[1]):
+        for y in range(img.shape[0]):
+            img[y, x] = origin_img[y + y_, x + x_]
+    return img
+
+
+def save_map(img, index) -> str:
+    plt.imshow(img)
+    save_path = cf.OUT_DATA_PATH + '/' + f'map {index}.png'
+    plt.savefig(save_path)
+    return save_path
+
+
+def video_main():
     video_list = []
     for video_path in pathlib.Path(cf.INPUT_DATA_PATH).glob('*.mp4'):
         video_list.append(str(video_path))
-    for video_index in range(len(video_list)):
-        frames = read_video(video_list[video_index], cf.IMG_SIZE, frames_freq=1)
-        sizes = (thickness, frames[0].shape[0] * 2 + frames[0].shape[1] * 2, 3)
-        img = frames[0].copy()
-        img.resize((sizes[0] * len(frames), sizes[1], sizes[2]))
-        for i in range(len(frames)):
-            slice = get_slice(frames[i])
-            # print(i)
-            for x in range(sizes[1]):
-                for y in range(sizes[0]):
-                    img[y + i * thickness, x] = slice[y, x]
 
-        plt.imshow(img)
-        plt.savefig(cf.OUT_DATA_PATH + '/' + f'map {video_index}.png')
-        # plt.show()
+    for video_index in range(len(video_list)):
+        img = get_map(video_list[9], frame_freq=1)
+        img = rotate_map(img)
+        img = skew_map(img)
+        save_map(img, video_index)
+        break
