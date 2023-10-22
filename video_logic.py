@@ -127,6 +127,31 @@ def crop_img(origin_img, x_=160, y_=70):
     return img
 
 
+def get_counters_list(image, dust_thresh_, dust_min_area_):
+    img_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    ret, thresh = cv2.threshold(img_gray, dust_thresh_, 255, cv2.THRESH_BINARY)
+    contours, hierarchy = cv2.findContours(image=thresh, mode=cv2.RETR_TREE, method=cv2.CHAIN_APPROX_NONE)
+
+    filters = []
+    for i in contours:
+        area = np.abs(cv2.contourArea(i))
+        if area > dust_min_area_:
+            filters.append(i)
+    return filters
+
+
+def dust_selection(origin_img, dust_thresh_, dust_min_area_):
+    origin_img_copy = origin_img.copy()
+    image = origin_img[0:origin_img.shape[0],
+            origin_img.shape[1] * 970 // 2240: origin_img.shape[1] * 1570 // 2240]
+
+    filters = get_counters_list(image, dust_thresh_, dust_min_area_)
+    cv2.drawContours(image=origin_img_copy, contours=filters, contourIdx=-1, color=(0, 0, 255), thickness=1,
+                     lineType=cv2.LINE_AA, offset=(origin_img.shape[1] * 970 // 2240, 0))
+    return origin_img_copy
+
+
 def save_map(img, index) -> str:
     plt.imshow(img)
     save_path = cf.OUT_DATA_PATH + '/' + f'map {index}.png'

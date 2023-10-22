@@ -1,11 +1,11 @@
 import os, sys, pathlib
 from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QFormLayout, QLayout, QMenuBar,\
-    QLineEdit, QLabel, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFileDialog, QSizePolicy
-from PySide6.QtGui import QPainter, QPixmap, QIcon, QIntValidator, QScreen
+    QLineEdit, QLabel, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFileDialog, QSizePolicy, QCheckBox
+from PySide6.QtGui import QPainter, QPixmap, QIcon, QIntValidator, QScreen, QPen, QBrush, QColor
 from PySide6.QtCore import Qt, QPoint, QSize, QRect, QLine
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from video_logic import skew_map, save_map, get_map, crop_img
+from video_logic import skew_map, save_map, get_map, crop_img, dust_selection
 from loadlabel import loading
 import config as cf
 
@@ -24,7 +24,8 @@ class MainWindow(QMainWindow):
         # self.setWindowIcon(QIcon(cf.ICON_WINDOW_PATH))
 
     def run(self) -> None:
-        self.show()
+        # self.show()
+        self.showMaximized()
 
     def exit(self) -> None:
         self.app.exit()
@@ -33,14 +34,25 @@ class MainWindow(QMainWindow):
 class SettingsDialog(QDialog):
     def __init__(self, parent_: QWidget = None):
         super().__init__(parent_)
+        self.setWindowTitle("Настройки")
 
         self.thickness = cf.DEFAULT_THICKNESS
         self.frame_frequency = cf.DEFAULT_FRAME_FREQUENCY
         self.skew_effect = cf.DEFAULT_SKEW_EFFECT
 
+        self.is_stabilization = False
+
+        self.is_dust_selection = True
+        self.dust_min_area = 50
+        self.dust_thresh = 200
+
         self.thickness_editor = QLineEdit(self)
         self.frame_frequency_editor = QLineEdit(self)
         self.skew_effect_editor = QLineEdit(self)
+        self.stabilization_editor = QCheckBox("Применить стабилизацию", self)
+        self.dust_selection_editor = QCheckBox("Отображать контуры пыли", self)
+        self.dust_min_editor = QLineEdit(self)
+        self.dust_thresh_editor = QLineEdit(self)
         self._editors_init()
 
         self.ok_btn = QPushButton("Oк", self)
@@ -64,6 +76,22 @@ class SettingsDialog(QDialog):
         self.skew_effect_editor.setText(str(self.skew_effect))
         self.skew_effect_editor.textChanged.connect(self.skew_effect_edit_action)
 
+        self.stabilization_editor.setChecked(self.is_stabilization)
+        self.stabilization_editor.stateChanged.connect(self.stabilization_edit_action)
+
+        self.dust_selection_editor.setChecked(self.is_dust_selection)
+        self.dust_selection_editor.stateChanged.connect(self.dust_selection_edit_action)
+
+        self.dust_min_editor.setAlignment(Qt.AlignLeft)
+        self.dust_min_editor.setValidator(QIntValidator())
+        self.dust_min_editor.setText(str(self.dust_min_area))
+        self.dust_min_editor.textChanged.connect(self.dust_min_area_edit_action)
+
+        self.dust_thresh_editor.setAlignment(Qt.AlignLeft)
+        self.dust_thresh_editor.setValidator(QIntValidator())
+        self.dust_thresh_editor.setText(str(self.dust_thresh))
+        self.dust_thresh_editor.textChanged.connect(self.dust_thresh_edit_action)
+
     def _widgets_to_layout(self) -> None:
         layout = QFormLayout()
         layout.addRow("Параметры вырезки", None)
@@ -71,7 +99,11 @@ class SettingsDialog(QDialog):
         layout.addRow("Частота кадров: ", self.frame_frequency_editor)
         layout.addRow("Эффект искажения: ", self.skew_effect_editor)
         layout.addRow("Параметры стабилизации", None)
+        layout.addWidget(self.stabilization_editor)
         layout.addRow("Параметры выискивания", None)
+        layout.addWidget(self.dust_selection_editor)
+        layout.addRow("Минимальная площадь пыли", self.dust_min_editor)
+        layout.addRow("Яркость выискиваемой пыли", self.dust_thresh_editor)
         layout.addWidget(self.ok_btn)
         self.setLayout(layout)
 
@@ -93,16 +125,82 @@ class SettingsDialog(QDialog):
             self.skew_effect = 50
         self.skew_effect_editor.setText(str(self.skew_effect))
 
+    def stabilization_edit_action(self, state_):
+        self.is_stabilization = state_
+
+    def dust_selection_edit_action(self, state_):
+        self.is_dust_selection = state_
+
+    def dust_min_area_edit_action(self, text_: str) -> None:
+        self.dust_min_area = 10 if len(text_) <= 0 or text_.find('-') != -1 or int(text_) < 10 else int(text_)
+        if self.dust_min_area > 10:
+            self.dust_min_area = 10
+        self.dust_min_editor.setText(str(self.dust_min_area))
+
+    def dust_thresh_edit_action(self, text_: str) -> None:
+        self.dust_thresh = 150 if len(text_) <= 0 or text_.find('-') != -1 or int(text_) < 150 else int(text_)
+        if self.dust_thresh > 255:
+            self.dust_thresh = 255
+        self.dust_thresh_editor.setText(str(self.dust_thresh))
+
     def run(self) -> None:
         self.exec()
+
+
+class TubePainter(QPainter):
+    def __init__(self, parent_: QWidget):
+        super().__init__(parent_)
+        self.rect_size = QSize(400, 510)
+        self.pen = QPen()
+        self.pen.setStyle(Qt.SolidLine)
+        self.pen.setWidth(2)
+
+        self.position = QPoint(750, 80)
+
+    def draw_all(self, circle_d=20):
+        self.setPen(self.pen)
+        self.draw_sides(circle_d)
+        self.draw_circles(circle_d)
+
+    def draw_sides(self, circle_d):
+        length = circle_d * 25 // 20
+        self.draw_line(QPoint(0, 0), QPoint(self.rect_size.width(), 0))
+        self.draw_line(QPoint(0, self.rect_size.height()),
+                       QPoint(self.rect_size.width(), self.rect_size.height()))
+        for y in range(0, self.rect_size.height(), circle_d + length):
+            if y + length > self.rect_size.height():
+                length = self.rect_size.height() - y
+            self.draw_line(QPoint(0, y), QPoint(0, y + length))
+            self.draw_line(QPoint(self.rect_size.width(), y), QPoint(self.rect_size.width(), y + length))
+
+    def draw_line(self, pos1: QPoint, pos2: QPoint):
+        line = QLine(pos1 + self.position, pos2 + self.position)
+        self.drawLine(line)
+
+    def draw_circles(self, circle_d):
+        brush_circle = QBrush(QColor(240, 240, 240))
+        length = circle_d * 25 // 20
+        for y in range(length + circle_d // 2, self.rect_size.height(), circle_d + length):
+            self.drawEllipse(QPoint(0, y) + self.position, circle_d, circle_d // 2)
+            self.drawEllipse(QPoint(self.rect_size.width(), y) + self.position, circle_d, circle_d // 2)
+            self.fillRect(QRect(QPoint(- 2 - circle_d, y - circle_d // 2 - 2) + self.position,
+                                QSize(circle_d, circle_d + 2 * 2)), brush_circle)
+            self.fillRect(QRect(QPoint(self.rect_size.width() + 2, y - circle_d // 2 - 2) + self.position,
+                                QSize(circle_d, circle_d + 2 * 2)), brush_circle)
 
 
 class PaintTube(QWidget):
     def __init__(self, parent_: QWidget = None):
         super().__init__(parent_)
+        self.setMinimumSize(2000, 1000)
+        self.img = None
+
+    def paintEvent(self, event_) -> None:
+        painter = TubePainter(self)
+        painter.draw_all()
 
     def connect_img(self, img_) -> None:
-        pass
+        self.img = img_
 
     def set_active(self, is_active_: bool = True) -> False:
         self.setVisible(is_active_)
@@ -200,6 +298,9 @@ class MenuWidget(QWidget):
     def compute_video(self, path) -> None:
         self.img = get_map(path, self.settings_dialog.thickness, self.settings_dialog.frame_frequency)
         self.img = skew_map(self.img, self.settings_dialog.skew_effect)
+        if self.settings_dialog.is_dust_selection:
+            self.img = dust_selection(self.img, self.settings_dialog.dust_thresh,
+                                      self.settings_dialog.dust_min_area)
 
     def show_results(self):
         if self.img is None:
@@ -207,6 +308,7 @@ class MenuWidget(QWidget):
         self.map_widget.set_img(self.img)
         self.map_widget.setVisible(True)
         self.paint_map.set_active(True)
+        self.paint_map.update()
 
     def exit_action(self) -> None:
         self.main_window.exit()
